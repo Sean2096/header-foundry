@@ -141,7 +141,21 @@ input, select {
   transition: box-shadow .14s, background .14s;
 }
 
-.url-input-wrap input { height: 46px; padding-left: 36px; font-size: 14px; font-weight: 700; }
+.url-input-wrap input { height: 46px; padding-right: 118px; padding-left: 36px; font-size: 14px; font-weight: 700; }
+.current-page-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  background: var(--acid);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.current-page-button:hover { color: #fff; background: var(--blue); }
 input:focus, select:focus { background: #fff; box-shadow: 3px 3px 0 var(--blue); }
 small { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; }
 code { color: var(--blue); }

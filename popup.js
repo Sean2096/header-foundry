@@ -1,10 +1,6 @@
 const STORAGE_KEY = "headerFoundryTargetsV2";
 const LEGACY_STORAGE_KEY = "headerFoundryRules";
-
-const RESOURCE_TYPES = [
-  "main_frame", "sub_frame", "stylesheet", "script", "image", "font",
-  "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other"
-];
+const DRAFT_STORAGE_KEY = "headerFoundryComposerDraft";
 
 const APPENDABLE_REQUEST_HEADERS = new Set([
   "accept", "accept-encoding", "accept-language", "access-control-request-headers",
@@ -16,6 +12,7 @@ const APPENDABLE_REQUEST_HEADERS = new Set([
 const elements = {
   form: document.querySelector("#targetForm"),
   urlFilter: document.querySelector("#urlFilter"),
+  useCurrentPage: document.querySelector("#useCurrentPage"),
   batchRows: document.querySelector("#batchRows"),
   addHeaderRow: document.querySelector("#addHeaderRow"),
   draftCount: document.querySelector("#draftCount"),
@@ -73,46 +70,16 @@ function createTargetId() {
   return `target-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function toDnrRule(target, header) {
-  const change = { header: header.headerName, operation: header.operation };
-  if (header.operation !== "remove") change.value = header.headerValue;
-
-  const condition = { urlFilter: target.urlFilter, resourceTypes: RESOURCE_TYPES };
-  if (header.requestMethod !== "all") condition.requestMethods = [header.requestMethod];
-
-  return {
-    id: header.id,
-    priority: 1,
-    action: {
-      type: "modifyHeaders",
-      [header.headerTarget === "request" ? "requestHeaders" : "responseHeaders"]: [change]
-    },
-    condition
-  };
-}
-
-function enabledDnrRules(source = targets) {
-  return source.flatMap((target) => {
-    if (!target.enabled) return [];
-    return target.headers
-      .filter((header) => header.enabled)
-      .map((header) => toDnrRule(target, header));
-  });
-}
-
-async function syncDnr(source = targets) {
-  const current = await chrome.declarativeNetRequest.getDynamicRules();
-  const desired = enabledDnrRules(source);
-  if (current.length === 0 && desired.length === 0) return;
-  await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: current.map((rule) => rule.id),
-    addRules: desired
-  });
+function enabledHeaderCount(source = targets) {
+  return source.reduce((count, target) => {
+    if (!target.enabled) return count;
+    return count + target.headers.filter((header) => header.enabled).length;
+  }, 0);
 }
 
 async function commit(nextTargets) {
-  await syncDnr(nextTargets);
   await chrome.storage.local.set({ [STORAGE_KEY]: nextTargets });
+  await chrome.runtime.sendMessage({ type: "sync-page-rules" });
   targets = nextTargets;
   renderTargets();
 }
@@ -123,7 +90,7 @@ function headerValueMarkup(header) {
 }
 
 function renderTargets() {
-  const liveRules = enabledDnrRules().length;
+  const liveRules = enabledHeaderCount();
   elements.targetCount.textContent = String(targets.length).padStart(2, "0");
   elements.activeCount.textContent = String(liveRules).padStart(2, "0");
   elements.emptyState.hidden = targets.length > 0;
@@ -220,6 +187,42 @@ function addDraftRow(initial = {}) {
   updateDraftRows();
 }
 
+function resetDraftRows() {
+  elements.batchRows.innerHTML = "";
+  addDraftRow({ headerName: "x-use-ppe", headerValue: "1" });
+  addDraftRow({ headerName: "x-tt-env", headerValue: "ppe_xx" });
+}
+
+function draftState() {
+  return {
+    urlFilter: elements.urlFilter.value,
+    headers: [...elements.batchRows.querySelectorAll(".batch-row")].map((row) => ({
+      headerTarget: row.querySelector('[data-field="headerTarget"]').value,
+      requestMethod: row.querySelector('[data-field="requestMethod"]').value,
+      operation: row.querySelector('[data-field="operation"]').value,
+      headerName: row.querySelector('[data-field="headerName"]').value,
+      headerValue: row.querySelector('[data-field="headerValue"]').value
+    }))
+  };
+}
+
+function saveDraft() {
+  return chrome.storage.session.set({ [DRAFT_STORAGE_KEY]: draftState() });
+}
+
+function persistDraft() {
+  saveDraft().catch(() => {
+    // Rules still work if the short-lived composer draft cannot be persisted.
+  });
+}
+
+function restoreDraft(savedDraft) {
+  if (!savedDraft || !Array.isArray(savedDraft.headers) || savedDraft.headers.length === 0) return;
+  elements.urlFilter.value = typeof savedDraft.urlFilter === "string" ? savedDraft.urlFilter : elements.urlFilter.value;
+  elements.batchRows.innerHTML = "";
+  savedDraft.headers.forEach((header) => addDraftRow(header));
+}
+
 function updateRowValueVisibility(row) {
   const operation = row.querySelector('[data-field="operation"]').value;
   const valueInput = row.querySelector('[data-field="headerValue"]');
@@ -265,7 +268,7 @@ function validateHeader(header, index) {
 async function submitBatch(event) {
   event.preventDefault();
   const urlFilter = elements.urlFilter.value.trim();
-  if (!urlFilter) return showToast("目标 URL 不能为空", true);
+  if (!urlFilter) return showToast("页面 URL 不能为空", true);
 
   const draftHeaders = collectDraftHeaders();
   for (let index = 0; index < draftHeaders.length; index += 1) {
@@ -302,8 +305,8 @@ async function submitBatch(event) {
 
   try {
     await commit(nextTargets);
-    elements.batchRows.innerHTML = "";
-    addDraftRow();
+    resetDraftRows();
+    persistDraft();
     showToast(existing ? `已向 ${urlFilter} 追加 ${headers.length} 条规则` : `已创建目标并应用 ${headers.length} 条规则`);
   } catch (error) {
     showToast(`应用失败：${error.message}`, true);
@@ -343,22 +346,45 @@ function migrateLegacyRules(legacyRules) {
 
 async function initialize() {
   try {
-    const stored = await chrome.storage.local.get([STORAGE_KEY, LEGACY_STORAGE_KEY]);
+    const [stored, storedDraft] = await Promise.all([
+      chrome.storage.local.get([STORAGE_KEY, LEGACY_STORAGE_KEY]),
+      chrome.storage.session.get(DRAFT_STORAGE_KEY)
+    ]);
     if (Array.isArray(stored[STORAGE_KEY])) {
       targets = stored[STORAGE_KEY];
     } else if (Array.isArray(stored[LEGACY_STORAGE_KEY])) {
       targets = migrateLegacyRules(stored[LEGACY_STORAGE_KEY]);
       await chrome.storage.local.set({ [STORAGE_KEY]: targets });
     }
-    await syncDnr();
+    restoreDraft(storedDraft[DRAFT_STORAGE_KEY]);
+    await chrome.runtime.sendMessage({ type: "sync-page-rules" });
     renderTargets();
   } catch (error) {
     showToast(`初始化失败：${error.message}`, true);
   }
 }
 
+async function fillCurrentPage() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const url = new URL(tab?.url || "");
+    if (!["http:", "https:"].includes(url.protocol)) throw new Error("当前页面不是 HTTP(S) 页面");
+    elements.urlFilter.value = `||${url.hostname}/`;
+    persistDraft();
+    showToast(`已使用当前页面：${url.hostname}`);
+  } catch (error) {
+    showToast(error.message || "无法读取当前页面", true);
+  }
+}
+
 elements.form.addEventListener("submit", submitBatch);
-elements.addHeaderRow.addEventListener("click", () => addDraftRow());
+elements.useCurrentPage.addEventListener("click", fillCurrentPage);
+elements.form.addEventListener("input", persistDraft);
+elements.form.addEventListener("change", persistDraft);
+elements.addHeaderRow.addEventListener("click", () => {
+  addDraftRow();
+  persistDraft();
+});
 elements.batchRows.addEventListener("change", (event) => {
   if (event.target.dataset.field === "operation") updateRowValueVisibility(event.target.closest(".batch-row"));
 });
@@ -368,6 +394,7 @@ elements.batchRows.addEventListener("click", (event) => {
   if (rows.length === 1) return;
   event.target.closest(".batch-row").remove();
   updateDraftRows();
+  persistDraft();
 });
 
 elements.targetList.addEventListener("click", (event) => {
@@ -386,7 +413,7 @@ elements.targetList.addEventListener("click", (event) => {
     elements.urlFilter.value = target.urlFilter;
     window.scrollTo({ top: 0, behavior: "smooth" });
     elements.batchRows.querySelector('[data-field="headerName"]').focus();
-    showToast("已锁定目标 URL，可继续批量追加");
+    showToast("已锁定页面 URL，可继续批量追加");
   } else if (action === "toggle-target") {
     mutateTargets((next) => { next.find((item) => item.id === targetId).enabled = !target.enabled; }, target.enabled ? "目标已整体停用" : "目标已整体启用");
   } else if (action === "delete-target") {
@@ -440,5 +467,5 @@ elements.targetList.addEventListener("keydown", (event) => {
 
 elements.clearAll.addEventListener("click", () => mutateTargets((next) => next.splice(0), "全部目标已清空"));
 
-addDraftRow({ headerName: "X-Debug", headerValue: "true" });
+resetDraftRows();
 initialize();

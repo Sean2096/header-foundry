@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Header Foundry",
-  "version": "1.3.0",
+  "version": "1.6.0",
   "description": "Create, toggle, and manage request or response header rules.",
   "permissions": [
     "declarativeNetRequest",
     "storage",
-    "webRequest"
+    "webNavigation"
   ],
   "host_permissions": [
     "http://*/*",

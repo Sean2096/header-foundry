@@ -26,18 +26,19 @@
             <div class="index">01</div>
             <div>
               <p>RULE COMPOSER</p>
-              <h2 id="composerTitle">按目标 URL 批量配置</h2>
+              <h2 id="composerTitle">按页面 URL 批量配置</h2>
             </div>
           </div>
 
           <form id="targetForm">
             <label class="url-field">
-              <span>目标 URL FILTER</span>
+              <span>页面 URL FILTER</span>
               <div class="url-input-wrap">
                 <b aria-hidden="true">⌁</b>
                 <input id="urlFilter" name="urlFilter" required value="||httpbin.org/" placeholder="||api.example.com/" spellcheck="false" />
+                <button id="useCurrentPage" class="current-page-button" type="button">使用当前页面</button>
               </div>
-              <small><code>||example.com/</code> 可匹配主域名及其子域名</small>
+              <small><code>||example.com/</code> 匹配页面地址，页面内所有后端请求都会应用规则</small>
             </label>
 
             <div class="batch-bar">
@@ -65,7 +66,7 @@
             <div class="index">02</div>
             <div>
               <p>ROUTING TABLE</p>
-              <h2 id="targetListTitle">目标 URL</h2>
+              <h2 id="targetListTitle">页面 URL 规则</h2>
             </div>
             <button id="clearAll" class="text-button" type="button">清空全部</button>
           </div>
@@ -74,7 +75,7 @@
             <div class="empty-radar"><i></i></div>
             <div>
               <strong>等待第一条路由</strong>
-              <p>在上方输入目标 URL，并一次添加多条 Header。</p>
+              <p>在上方输入页面 URL，并一次添加多条 Header。</p>
             </div>
           </div>
           <div id="targetList" class="target-list" aria-live="polite"></div>

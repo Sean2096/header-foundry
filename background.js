@@ -1,10 +1,9 @@
 const STORAGE_KEY = "headerFoundryTargetsV2";
-const SESSION_KEY = "headerFoundryMatchedTabs";
 
-const RESOURCE_TYPES = new Set([
-  "main_frame", "sub_frame", "stylesheet", "script", "image", "font",
-  "object", "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other"
-]);
+const PAGE_REQUEST_RESOURCE_TYPES = [
+  "sub_frame", "stylesheet", "script", "image", "font", "object",
+  "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other"
+];
 
 function createIcon(size, active) {
   const canvas = new OffscreenCanvas(size, size);
@@ -82,140 +81,172 @@ function urlFilterMatches(urlValue, filterValue) {
   }
 }
 
+function enabledHeadersForPage(pageUrl) {
+  const headers = [];
+  const seen = new Set();
+
+  for (const target of targets) {
+    if (!target.enabled || !urlFilterMatches(pageUrl, target.urlFilter)) continue;
+    for (const header of target.headers) {
+      if (!header.enabled) continue;
+      const key = [header.headerTarget, header.requestMethod, header.headerName.toLowerCase()].join(":");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      headers.push(header);
+    }
+  }
+
+  return headers;
+}
+
+function headerAction(header) {
+  const change = { header: header.headerName, operation: header.operation };
+  if (header.operation !== "remove") change.value = header.headerValue;
+  return {
+    type: "modifyHeaders",
+    [header.headerTarget === "request" ? "requestHeaders" : "responseHeaders"]: [change]
+  };
+}
+
+function conditionForHeader(header, baseCondition) {
+  const condition = { ...baseCondition };
+  if (header.requestMethod !== "all") condition.requestMethods = [header.requestMethod];
+  return condition;
+}
+
+function buildSessionRules(tabs) {
+  const rules = [];
+  let ruleId = 1;
+
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id)) continue;
+    for (const header of enabledHeadersForPage(tab.url)) {
+      rules.push({
+        id: ruleId,
+        priority: 1,
+        action: headerAction(header),
+        condition: conditionForHeader(header, {
+          tabIds: [tab.id],
+          resourceTypes: PAGE_REQUEST_RESOURCE_TYPES
+        })
+      });
+      ruleId += 1;
+    }
+  }
+
+  return rules;
+}
+
+function buildNavigationRules() {
+  const rules = [];
+  let ruleId = 1;
+
+  targets.forEach((target, targetIndex) => {
+    if (!target.enabled) return;
+    target.headers.filter((header) => header.enabled).forEach((header) => {
+      rules.push({
+        id: ruleId,
+        priority: targets.length - targetIndex,
+        action: headerAction(header),
+        condition: conditionForHeader(header, {
+          urlFilter: target.urlFilter,
+          resourceTypes: ["main_frame"]
+        })
+      });
+      ruleId += 1;
+    });
+  });
+
+  return rules;
+}
+
+async function setTabState(tab, headers) {
+  if (!Number.isInteger(tab.id)) return;
+  const count = headers.length;
+  const active = count > 0;
+
+  try {
+    await Promise.all([
+      chrome.action.setIcon({ tabId: tab.id, imageData: active ? ICONS.active : ICONS.inactive }),
+      chrome.action.setBadgeText({ tabId: tab.id, text: active ? String(Math.min(count, 99)) : "" }),
+      chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: "#1e5dff" }),
+      chrome.action.setTitle({
+        tabId: tab.id,
+        title: active
+          ? `Header Foundry：当前页面已启用 ${count} 条 Header 规则`
+          : "Header Foundry：当前页面没有启用的 Header 规则"
+      })
+    ]);
+  } catch {
+    // The tab may close while its rules and icon are being refreshed.
+  }
+}
+
 let targets = [];
-let matchedTabs = new Map();
-let persistQueue = Promise.resolve();
+let syncQueue = Promise.resolve();
 
 const targetsReady = chrome.storage.local.get(STORAGE_KEY).then((stored) => {
   targets = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
 });
 
-const sessionReady = chrome.storage.session.get(SESSION_KEY).then((stored) => {
-  const saved = stored[SESSION_KEY] || {};
-  matchedTabs = new Map(
-    Object.entries(saved).map(([tabId, ruleIds]) => [Number(tabId), new Set(ruleIds)])
-  );
-});
-
-function persistMatchedTabs() {
-  const snapshot = Object.fromEntries(
-    [...matchedTabs.entries()].map(([tabId, ruleIds]) => [String(tabId), [...ruleIds]])
-  );
-  persistQueue = persistQueue.then(() => chrome.storage.session.set({ [SESSION_KEY]: snapshot }));
-  return persistQueue;
-}
-
-async function setTabState(tabId, ruleIds) {
-  if (!Number.isInteger(tabId) || tabId < 0) return;
-  const count = ruleIds.size;
-  const active = count > 0;
-
-  try {
-    await Promise.all([
-      chrome.action.setIcon({ tabId, imageData: active ? ICONS.active : ICONS.inactive }),
-      chrome.action.setBadgeText({ tabId, text: active ? String(Math.min(count, 99)) : "" }),
-      chrome.action.setBadgeBackgroundColor({ tabId, color: "#1e5dff" }),
-      chrome.action.setTitle({
-        tabId,
-        title: active
-          ? `Header Foundry：当前页面有 ${count} 条请求规则已命中`
-          : "Header Foundry：当前页面尚无请求命中规则"
-      })
-    ]);
-  } catch {
-    // The tab may close while an async icon update is in flight.
-  }
-}
-
-async function resetTab(tabId) {
-  await sessionReady;
-  matchedTabs.delete(tabId);
-  await Promise.all([setTabState(tabId, new Set()), persistMatchedTabs()]);
-}
-
-function matchingRuleIds(details) {
-  if (!RESOURCE_TYPES.has(details.type)) return [];
-  const method = details.method.toLowerCase();
-  const ids = [];
-
-  for (const target of targets) {
-    if (!target.enabled || !urlFilterMatches(details.url, target.urlFilter)) continue;
-    for (const header of target.headers) {
-      if (!header.enabled) continue;
-      if (header.requestMethod !== "all" && header.requestMethod !== method) continue;
-      ids.push(header.id);
-    }
-  }
-
-  return ids;
-}
-
-async function observeRequest(details) {
-  if (details.tabId < 0) return;
-  await Promise.all([targetsReady, sessionReady]);
-
-  if (details.type === "main_frame") {
-    matchedTabs.delete(details.tabId);
-  }
-
-  const matchedIds = matchingRuleIds(details);
-  const tabMatches = matchedTabs.get(details.tabId) || new Set();
-  let changed = details.type === "main_frame";
-
-  for (const ruleId of matchedIds) {
-    if (!tabMatches.has(ruleId)) {
-      tabMatches.add(ruleId);
-      changed = true;
-    }
-  }
-
-  if (!changed) return;
-  if (tabMatches.size > 0) matchedTabs.set(details.tabId, tabMatches);
-  await Promise.all([setTabState(details.tabId, tabMatches), persistMatchedTabs()]);
-}
-
-async function refreshStoredTabs() {
-  await sessionReady;
+async function syncAllPageRules() {
+  await targetsReady;
   const tabs = await chrome.tabs.query({});
-  await Promise.all(tabs.map((tab) => setTabState(tab.id, matchedTabs.get(tab.id) || new Set())));
+  const [currentSessionRules, currentDynamicRules] = await Promise.all([
+    chrome.declarativeNetRequest.getSessionRules(),
+    chrome.declarativeNetRequest.getDynamicRules()
+  ]);
+  const sessionRules = buildSessionRules(tabs);
+  const navigationRules = buildNavigationRules();
+
+  await Promise.all([
+    chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: currentSessionRules.map((rule) => rule.id),
+      addRules: sessionRules
+    }),
+    chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: currentDynamicRules.map((rule) => rule.id),
+      addRules: navigationRules
+    })
+  ]);
+
+  await Promise.all(tabs.map((tab) => setTabState(tab, enabledHeadersForPage(tab.url))));
 }
 
-async function clearAllTabMatches() {
-  await sessionReady;
-  matchedTabs.clear();
-  await persistMatchedTabs();
-  const tabs = await chrome.tabs.query({});
-  await Promise.all(tabs.map((tab) => setTabState(tab.id, new Set())));
+function scheduleSync() {
+  const run = syncQueue.then(syncAllPageRules);
+  syncQueue = run.catch(() => {});
+  return run;
 }
 
-chrome.webRequest.onBeforeRequest.addListener(
-  (details) => { observeRequest(details); },
-  { urls: ["http://*/*", "https://*/*"] }
-);
-
-chrome.tabs.onRemoved.addListener((tabId) => {
-  sessionReady.then(() => {
-    if (matchedTabs.delete(tabId)) persistMatchedTabs();
-  });
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+  if (changeInfo.url) scheduleSync();
 });
 
-chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  sessionReady.then(() => {
-    matchedTabs.delete(removedTabId);
-    matchedTabs.delete(addedTabId);
-    Promise.all([setTabState(addedTabId, new Set()), persistMatchedTabs()]);
-  });
-});
+chrome.tabs.onRemoved.addListener(() => { scheduleSync(); });
+chrome.tabs.onReplaced.addListener(() => { scheduleSync(); });
+
+function syncTopFrame(details) {
+  if (details.frameId === 0) scheduleSync();
+}
+
+chrome.webNavigation.onCommitted.addListener(syncTopFrame);
+chrome.webNavigation.onHistoryStateUpdated.addListener(syncTopFrame);
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes[STORAGE_KEY]) return;
   targets = Array.isArray(changes[STORAGE_KEY].newValue) ? changes[STORAGE_KEY].newValue : [];
-  clearAllTabMatches();
+  scheduleSync();
 });
 
-chrome.runtime.onInstalled.addListener(clearAllTabMatches);
-chrome.runtime.onStartup.addListener(refreshStoredTabs);
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "sync-page-rules") return scheduleSync().then(() => ({ ok: true }));
+  return undefined;
+});
+
+chrome.runtime.onInstalled.addListener(() => { scheduleSync(); });
+chrome.runtime.onStartup.addListener(() => { scheduleSync(); });
 
 chrome.action.setIcon({ imageData: ICONS.inactive });
-chrome.action.setTitle({ title: "Header Foundry：当前页面尚无请求命中规则" });
-refreshStoredTabs();
+chrome.action.setTitle({ title: "Header Foundry：当前页面没有启用的 Header 规则" });
+scheduleSync();
