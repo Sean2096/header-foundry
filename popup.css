@@ -287,6 +287,36 @@ code { color: var(--blue); }
 
 .target-list { display: grid; gap: 11px; }
 
+.bulk-actions {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 11px;
+  padding: 9px 10px;
+  border: 1px solid var(--ink);
+  color: var(--paper);
+  background: var(--ink);
+  box-shadow: 3px 3px 0 var(--cyan);
+}
+.bulk-select-all { display: flex; align-items: center; gap: 8px; font-size: 10px; font-weight: 700; letter-spacing: .08em; cursor: pointer; }
+.bulk-select-all input { width: 16px; height: 16px; margin: 0; accent-color: var(--acid); }
+.bulk-selection { display: flex; align-items: center; gap: 5px; color: var(--cyan); }
+.bulk-selection b { font-family: Georgia, serif; font-size: 20px; font-weight: 400; line-height: 1; }
+.bulk-selection span { font-size: 9px; letter-spacing: .1em; }
+.bulk-buttons { display: flex; gap: 5px; }
+.bulk-buttons button {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--paper);
+  color: var(--paper);
+  background: transparent;
+  font-size: 10px;
+  cursor: pointer;
+}
+.bulk-buttons button:hover:not(:disabled) { border-color: var(--acid); color: var(--ink); background: var(--acid); }
+.bulk-buttons button:disabled { opacity: .35; cursor: not-allowed; }
+
 .target-card {
   border: 1px solid var(--ink);
   background: var(--sheet);
@@ -294,15 +324,23 @@ code { color: var(--blue); }
   animation: cardIn .25s ease-out both;
 }
 .target-card.disabled { opacity: .62; box-shadow: none; }
+.target-card.selected { box-shadow: 4px 4px 0 var(--blue); }
 
 .target-head {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 20px 34px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 11px;
   border-bottom: 1px solid var(--line);
 }
+
+.target-selector { position: relative; display: grid; width: 18px; height: 18px; place-items: center; cursor: pointer; }
+.target-selector input { position: absolute; width: 18px; height: 18px; margin: 0; opacity: 0; cursor: pointer; }
+.target-selector span { display: grid; width: 16px; height: 16px; place-items: center; border: 1px solid var(--ink); background: var(--paper); }
+.target-selector input:checked + span { background: var(--blue); }
+.target-selector input:checked + span::after { content: "✓"; color: #fff; font-size: 11px; font-weight: 700; }
+.target-selector input:focus-visible + span { outline: 2px solid var(--blue); outline-offset: 2px; }
 
 .toggle {
   position: relative;

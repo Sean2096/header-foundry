@@ -18,6 +18,12 @@ const elements = {
   draftCount: document.querySelector("#draftCount"),
   targetList: document.querySelector("#targetList"),
   emptyState: document.querySelector("#emptyState"),
+  bulkActions: document.querySelector("#bulkActions"),
+  selectAllTargets: document.querySelector("#selectAllTargets"),
+  selectedTargetCount: document.querySelector("#selectedTargetCount"),
+  enableSelected: document.querySelector("#enableSelected"),
+  disableSelected: document.querySelector("#disableSelected"),
+  invertSelected: document.querySelector("#invertSelected"),
   targetCount: document.querySelector("#targetCount"),
   activeCount: document.querySelector("#activeCount"),
   clearAll: document.querySelector("#clearAll"),
@@ -29,6 +35,7 @@ let draftRowSequence = 0;
 let toastTimer;
 let editingHeaderId = null;
 const collapsedTargets = new Set();
+const selectedTargetIds = new Set();
 
 function showToast(message, isError = false) {
   clearTimeout(toastTimer);
@@ -90,11 +97,17 @@ function headerValueMarkup(header) {
 }
 
 function renderTargets() {
+  const targetIds = new Set(targets.map((target) => target.id));
+  for (const targetId of selectedTargetIds) {
+    if (!targetIds.has(targetId)) selectedTargetIds.delete(targetId);
+  }
+
   const liveRules = enabledHeaderCount();
   elements.targetCount.textContent = String(targets.length).padStart(2, "0");
   elements.activeCount.textContent = String(liveRules).padStart(2, "0");
   elements.emptyState.hidden = targets.length > 0;
   elements.clearAll.hidden = targets.length === 0;
+  elements.bulkActions.hidden = targets.length === 0;
 
   elements.targetList.innerHTML = targets.map((target) => {
     const activeHeaders = target.headers.filter((header) => header.enabled).length;
@@ -133,8 +146,12 @@ function renderTargets() {
     }).join("");
 
     return `
-      <article class="target-card ${target.enabled ? "" : "disabled"} ${collapsed ? "collapsed" : ""}" data-target-id="${target.id}">
+      <article class="target-card ${target.enabled ? "" : "disabled"} ${collapsed ? "collapsed" : ""} ${selectedTargetIds.has(target.id) ? "selected" : ""}" data-target-id="${target.id}">
         <div class="target-head">
+          <label class="target-selector" title="选择该页面规则">
+            <input data-action="select-target" type="checkbox" ${selectedTargetIds.has(target.id) ? "checked" : ""} aria-label="选择 ${escapeAttribute(target.urlFilter)}" />
+            <span aria-hidden="true"></span>
+          </label>
           <button class="toggle" data-action="toggle-target" type="button" aria-label="${target.enabled ? "停用" : "启用"}该目标" aria-pressed="${target.enabled}"></button>
           <div class="target-identity">
             <div class="target-url">${escapeHtml(target.urlFilter)}</div>
@@ -150,6 +167,19 @@ function renderTargets() {
       </article>
     `;
   }).join("");
+
+  updateBulkControls();
+}
+
+function updateBulkControls() {
+  const selectedCount = selectedTargetIds.size;
+  const hasSelection = selectedCount > 0;
+  elements.selectedTargetCount.textContent = String(selectedCount).padStart(2, "0");
+  elements.selectAllTargets.checked = targets.length > 0 && selectedCount === targets.length;
+  elements.selectAllTargets.indeterminate = selectedCount > 0 && selectedCount < targets.length;
+  elements.enableSelected.disabled = !hasSelection;
+  elements.disableSelected.disabled = !hasSelection;
+  elements.invertSelected.disabled = !hasSelection;
 }
 
 function rowTemplate(rowId) {
@@ -406,7 +436,10 @@ elements.targetList.addEventListener("click", (event) => {
   if (!target) return;
 
   const action = actionButton.dataset.action;
-  if (action === "collapse-target") {
+  if (action === "select-target") {
+    actionButton.checked ? selectedTargetIds.add(targetId) : selectedTargetIds.delete(targetId);
+    renderTargets();
+  } else if (action === "collapse-target") {
     collapsedTargets.has(targetId) ? collapsedTargets.delete(targetId) : collapsedTargets.add(targetId);
     renderTargets();
   } else if (action === "append-target") {
@@ -453,6 +486,36 @@ elements.targetList.addEventListener("click", (event) => {
     }
   }
 });
+
+elements.selectAllTargets.addEventListener("change", () => {
+  selectedTargetIds.clear();
+  if (elements.selectAllTargets.checked) {
+    targets.forEach((target) => selectedTargetIds.add(target.id));
+  }
+  renderTargets();
+});
+
+async function updateSelectedTargets(mode) {
+  if (selectedTargetIds.size === 0) return;
+  const selectedIds = new Set(selectedTargetIds);
+  const messages = {
+    enable: `已启用 ${selectedIds.size} 个页面规则`,
+    disable: `已停用 ${selectedIds.size} 个页面规则`,
+    invert: `已反转 ${selectedIds.size} 个页面规则`
+  };
+  await mutateTargets((next) => {
+    next.forEach((target) => {
+      if (!selectedIds.has(target.id)) return;
+      if (mode === "enable") target.enabled = true;
+      else if (mode === "disable") target.enabled = false;
+      else target.enabled = !target.enabled;
+    });
+  }, messages[mode]);
+}
+
+elements.enableSelected.addEventListener("click", () => { updateSelectedTargets("enable"); });
+elements.disableSelected.addEventListener("click", () => { updateSelectedTargets("disable"); });
+elements.invertSelected.addEventListener("click", () => { updateSelectedTargets("invert"); });
 
 elements.targetList.addEventListener("keydown", (event) => {
   if (!event.target.classList.contains("edit-value-input")) return;

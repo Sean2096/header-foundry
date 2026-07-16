@@ -78,6 +78,18 @@
               <p>在上方输入页面 URL，并一次添加多条 Header。</p>
             </div>
           </div>
+          <div id="bulkActions" class="bulk-actions" hidden>
+            <label class="bulk-select-all">
+              <input id="selectAllTargets" type="checkbox" />
+              <span>全选页面规则</span>
+            </label>
+            <div class="bulk-selection"><b id="selectedTargetCount">00</b><span>SELECTED</span></div>
+            <div class="bulk-buttons">
+              <button id="enableSelected" type="button">启用所选</button>
+              <button id="disableSelected" type="button">停用所选</button>
+              <button id="invertSelected" type="button">反转状态</button>
+            </div>
+          </div>
           <div id="targetList" class="target-list" aria-live="polite"></div>
         </section>
       </main>

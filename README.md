@@ -10,6 +10,7 @@
 - 支持 `SET`、`REMOVE` 和受 Chrome 限制的 `APPEND`
 - 按页面 URL 和 HTTP Method 匹配，后端请求 URL 不受限制
 - 目标整体启停、Header 单条启停、删除和全部清除
+- 页面规则支持多选后批量启用、批量停用或反转启用状态
 - 已保存的 `SET` / `APPEND` 规则可直接修改 Header 值
 - 编辑中的页面 URL 和批量 Header 会自动保存，Popup 关闭后重新打开仍可继续
 - 工具栏图标按当前页面是否启用规则切换
