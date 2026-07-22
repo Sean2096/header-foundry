@@ -18,6 +18,10 @@ const elements = {
   draftCount: document.querySelector("#draftCount"),
   targetList: document.querySelector("#targetList"),
   emptyState: document.querySelector("#emptyState"),
+  composerPanel: document.querySelector("#composerPanel"),
+  openComposer: document.querySelector("#openComposer"),
+  closeComposer: document.querySelector("#closeComposer"),
+  toggleBulkMode: document.querySelector("#toggleBulkMode"),
   bulkActions: document.querySelector("#bulkActions"),
   selectAllTargets: document.querySelector("#selectAllTargets"),
   selectedTargetCount: document.querySelector("#selectedTargetCount"),
@@ -34,6 +38,8 @@ let targets = [];
 let draftRowSequence = 0;
 let toastTimer;
 let editingHeaderId = null;
+let composerOpen = false;
+let bulkMode = false;
 const collapsedTargets = new Set();
 const selectedTargetIds = new Set();
 
@@ -107,7 +113,16 @@ function renderTargets() {
   elements.activeCount.textContent = String(liveRules).padStart(2, "0");
   elements.emptyState.hidden = targets.length > 0;
   elements.clearAll.hidden = targets.length === 0;
-  elements.bulkActions.hidden = targets.length === 0;
+  elements.toggleBulkMode.hidden = targets.length === 0;
+  elements.bulkActions.hidden = targets.length === 0 || !bulkMode;
+  elements.targetList.classList.toggle("bulk-mode", bulkMode);
+  elements.toggleBulkMode.classList.toggle("active", bulkMode);
+  elements.toggleBulkMode.textContent = bulkMode ? "完成" : "批量管理";
+
+  const showComposer = targets.length === 0 || composerOpen;
+  elements.composerPanel.hidden = !showComposer;
+  elements.openComposer.hidden = showComposer;
+  elements.closeComposer.hidden = targets.length === 0;
 
   elements.targetList.innerHTML = targets.map((target) => {
     const activeHeaders = target.headers.filter((header) => header.enabled).length;
@@ -155,7 +170,7 @@ function renderTargets() {
           <button class="toggle" data-action="toggle-target" type="button" aria-label="${target.enabled ? "停用" : "启用"}该目标" aria-pressed="${target.enabled}"></button>
           <div class="target-identity">
             <div class="target-url">${escapeHtml(target.urlFilter)}</div>
-            <div class="target-stat">${activeHeaders}/${target.headers.length} HEADERS READY</div>
+            <div class="target-stat">${activeHeaders}/${target.headers.length} 条 Header 已启用</div>
           </div>
           <div class="target-actions">
             <button class="icon-button" data-action="append-target" type="button" title="向此 URL 追加规则">＋</button>
@@ -335,6 +350,8 @@ async function submitBatch(event) {
 
   try {
     await commit(nextTargets);
+    composerOpen = false;
+    renderTargets();
     resetDraftRows();
     persistDraft();
     showToast(existing ? `已向 ${urlFilter} 追加 ${headers.length} 条规则` : `已创建目标并应用 ${headers.length} 条规则`);
@@ -443,8 +460,10 @@ elements.targetList.addEventListener("click", (event) => {
     collapsedTargets.has(targetId) ? collapsedTargets.delete(targetId) : collapsedTargets.add(targetId);
     renderTargets();
   } else if (action === "append-target") {
+    composerOpen = true;
+    renderTargets();
     elements.urlFilter.value = target.urlFilter;
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    elements.composerPanel.scrollIntoView({ behavior: "smooth", block: "start" });
     elements.batchRows.querySelector('[data-field="headerName"]').focus();
     showToast("已锁定页面 URL，可继续批量追加");
   } else if (action === "toggle-target") {
@@ -492,6 +511,24 @@ elements.selectAllTargets.addEventListener("change", () => {
   if (elements.selectAllTargets.checked) {
     targets.forEach((target) => selectedTargetIds.add(target.id));
   }
+  renderTargets();
+});
+
+elements.openComposer.addEventListener("click", () => {
+  composerOpen = true;
+  renderTargets();
+  elements.composerPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  elements.urlFilter.focus();
+});
+
+elements.closeComposer.addEventListener("click", () => {
+  composerOpen = false;
+  renderTargets();
+});
+
+elements.toggleBulkMode.addEventListener("click", () => {
+  bulkMode = !bulkMode;
+  if (!bulkMode) selectedTargetIds.clear();
   renderTargets();
 });
 
