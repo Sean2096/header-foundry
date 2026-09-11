@@ -2,8 +2,23 @@ const STORAGE_KEY = "headerFoundryTargetsV2";
 
 const PAGE_REQUEST_RESOURCE_TYPES = [
   "sub_frame", "stylesheet", "script", "image", "font", "object",
-  "xmlhttprequest", "ping", "csp_report", "media", "websocket", "other"
+  "xmlhttprequest", "ping", "csp_report", "media", "websocket",
+  "webtransport", "webbundle", "other"
 ];
+
+// Tab-scoped rules win over domain-scoped fallback rules for page-initiated
+// requests so that both can coexist deterministically.
+const TAB_RULE_PRIORITY = 2;
+const DOMAIN_RULE_PRIORITY = 1;
+
+function hostDomainFromFilter(filterValue) {
+  // Only "||domain..." anchors identify a page origin reliably enough for
+  // topDomains. Returns null for bare substring and "|"-anchored filters.
+  if (typeof filterValue !== "string" || !filterValue.startsWith("||")) return null;
+  const host = filterValue.slice(2).replace(/\|$/, "").split(/[/^]/, 1)[0];
+  if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(host) || !host.includes(".")) return null;
+  return host;
+}
 
 function createIcon(size, active) {
   const canvas = new OffscreenCanvas(size, size);
@@ -115,23 +130,73 @@ function conditionForHeader(header, baseCondition) {
 }
 
 function buildSessionRules(tabs) {
+  // specKey -> header spec and every tab it must apply to
+  const tabRules = new Map();
+  // fallbackKey -> domain-scoped rule covering tab-less requests issued by
+  // the page's service worker (whose tabId is -1)
+  const domainRules = new Map();
+
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id) || !tab.url) continue;
+    const seen = new Set();
+    for (const target of targets) {
+      if (!target.enabled || !urlFilterMatches(tab.url, target.urlFilter)) continue;
+      const domain = hostDomainFromFilter(target.urlFilter);
+      for (const header of target.headers) {
+        if (!header.enabled) continue;
+        const dedupKey = [header.headerTarget, header.requestMethod, header.headerName.toLowerCase()].join(":");
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+
+        const specKey = JSON.stringify([
+          dedupKey,
+          header.operation,
+          header.operation === "remove" ? "" : header.headerValue
+        ]);
+        let entry = tabRules.get(specKey);
+        if (!entry) {
+          entry = { header, tabIds: new Set() };
+          tabRules.set(specKey, entry);
+        }
+        entry.tabIds.add(tab.id);
+
+        if (domain) {
+          const fallbackKey = `${domain}|${specKey}`;
+          if (!domainRules.has(fallbackKey)) {
+            domainRules.set(fallbackKey, { domain, header });
+          }
+        }
+      }
+    }
+  }
+
   const rules = [];
   let ruleId = 1;
 
-  for (const tab of tabs) {
-    if (!Number.isInteger(tab.id)) continue;
-    for (const header of enabledHeadersForPage(tab.url)) {
-      rules.push({
-        id: ruleId,
-        priority: 1,
-        action: headerAction(header),
-        condition: conditionForHeader(header, {
-          tabIds: [tab.id],
-          resourceTypes: PAGE_REQUEST_RESOURCE_TYPES
-        })
-      });
-      ruleId += 1;
-    }
+  for (const { header, tabIds } of tabRules.values()) {
+    rules.push({
+      id: ruleId,
+      priority: TAB_RULE_PRIORITY,
+      action: headerAction(header),
+      condition: conditionForHeader(header, {
+        tabIds: [...tabIds].sort((a, b) => a - b),
+        resourceTypes: PAGE_REQUEST_RESOURCE_TYPES
+      })
+    });
+    ruleId += 1;
+  }
+
+  for (const { domain, header } of domainRules.values()) {
+    rules.push({
+      id: ruleId,
+      priority: DOMAIN_RULE_PRIORITY,
+      action: headerAction(header),
+      condition: conditionForHeader(header, {
+        topDomains: [domain],
+        resourceTypes: PAGE_REQUEST_RESOURCE_TYPES
+      })
+    });
+    ruleId += 1;
   }
 
   return rules;
@@ -204,10 +269,12 @@ async function syncAllPageRules() {
       removeRuleIds: currentSessionRules.map((rule) => rule.id),
       addRules: sessionRules
     }),
+    // Main-frame navigation rules are global and best-effort: an invalid
+    // page filter must not block tab-scoped rules or the icon refresh.
     chrome.declarativeNetRequest.updateDynamicRules({
       removeRuleIds: currentDynamicRules.map((rule) => rule.id),
       addRules: navigationRules
-    })
+    }).catch((error) => console.warn("Header Foundry: dynamic rule update failed", error))
   ]);
 
   await Promise.all(tabs.map((tab) => setTabState(tab, enabledHeadersForPage(tab.url))));
