@@ -6,13 +6,12 @@ const elements = {
   form: document.querySelector("#targetForm"),
   urlFilter: document.querySelector("#urlFilter"),
   urlFieldNew: document.querySelector("#urlFieldNew"),
-  urlFieldLocked: document.querySelector("#urlFieldLocked"),
-  urlLockedValue: document.querySelector("#urlLockedValue"),
   useCurrentPage: document.querySelector("#useCurrentPage"),
   batchRows: document.querySelector("#batchRows"),
   draftCount: document.querySelector("#draftCount"),
   addHeaderRow: document.querySelector("#addHeaderRow"),
   targetList: document.querySelector("#targetList"),
+  detail: document.querySelector(".detail"),
   emptyState: document.querySelector("#emptyState"),
   targetDetail: document.querySelector("#targetDetail"),
   detailUrl: document.querySelector("#detailUrl"),
@@ -40,12 +39,30 @@ const elements = {
 let targets = [];
 let draftRowSequence = 0;
 let toastTimer;
-let editingHeaderId = null;
 let bulkMode = false;
 const selectedTargetIds = new Set();
 let selectedTargetId = null;
-// composer: closed | { mode: "new" } | { mode: "append", targetId }
+// composer is only used for creating a *new page* now; existing pages are
+// edited inline directly in the rules list.
+// composer: closed | { mode: "new" }
 let composer = { open: false, mode: "new", targetId: null };
+// True while the rules list shows an inline "new header" editor row.
+let addingInline = false;
+
+// Field metadata for the inline-editable rules grid.
+const HEADER_FIELDS = {
+  headerTarget: { type: "select", options: [["request", "REQ"], ["response", "RES"]] },
+  requestMethod: {
+    type: "select",
+    options: [["all", "ALL"], ["get", "GET"], ["post", "POST"], ["put", "PUT"], ["patch", "PATCH"], ["delete", "DELETE"]]
+  },
+  operation: { type: "select", options: [["set", "SET"], ["append", "APPEND"], ["remove", "REMOVE"]] },
+  headerName: { type: "text" },
+  headerValue: { type: "text" }
+};
+const HEADER_FIELD_LABEL = {
+  headerTarget: "位置", requestMethod: "方法", operation: "操作", headerName: "Header 名称", headerValue: "Header 值"
+};
 
 function showToast(message, isError = false) {
   clearTimeout(toastTimer);
@@ -71,11 +88,6 @@ function escapeAttribute(value) {
 
 function allHeaders(source = targets) {
   return source.flatMap((target) => target.headers);
-}
-
-function headerValueMarkup(header) {
-  if (header.operation === "remove") return "";
-  return ` <b>${escapeHtml(header.headerValue)}</b>`;
 }
 
 function nextRuleId() {
@@ -343,19 +355,6 @@ async function initialize() {
       restoreDraft(storedLegacy[DRAFT_STORAGE_KEY]);
     }
 
-    // Restore an in-progress append draft only when it matches selection.
-    if (!composer.open && storedLegacy[DRAFT_STORAGE_KEY]) {
-      const draft = storedLegacy[DRAFT_STORAGE_KEY];
-      const owner = targets.find((t) => t.urlFilter === draft.urlFilter);
-      if (owner) {
-        selectedTargetId = owner.id;
-        composer = { open: true, mode: "append", targetId: owner.id };
-        elements.urlFilter.value = owner.urlFilter;
-        elements.batchRows.innerHTML = "";
-        draft.headers.forEach((h) => addDraftRow(h));
-      }
-    }
-
     if (!elements.batchRows.children.length) resetDraftRows();
     renderTargets();
     await chrome.runtime.sendMessage({ type: "sync-page-rules" });
@@ -404,37 +403,67 @@ function renderRail() {
   });
 }
 
-function ruleRowMarkup(header) {
-  if (editingHeaderId === header.id) {
-    return `
-          <div class="saved-rule editing" data-header-id="${header.id}">
-            <span class="rule-kind ${header.headerTarget === "response" ? "response" : ""}">${header.headerTarget === "request" ? "REQ" : "RES"}</span>
-            <div class="rule-editor">
-              <span>${escapeHtml(header.headerName)}</span>
-              <input class="edit-value-input" value="${escapeAttribute(header.headerValue)}" aria-label="新的 Header 值" spellcheck="false" />
-            </div>
-            <div class="edit-actions">
-              <button data-action="save-header-value" type="button">保存</button>
-              <button data-action="cancel-header-value" type="button">取消</button>
-            </div>
-          </div>
-        `;
-  }
+function fieldLabel(field, value) {
+  if (field === "headerName" || field === "headerValue") return value;
+  const option = HEADER_FIELDS[field].options.find(([key]) => key === value);
+  return option ? option[1] : value;
+}
 
+// A clickable cell: shows as plain text, turns into an editor on click.
+function ruleCellMarkup(header, field) {
+  if (field === "headerValue" && header.operation === "remove") {
+    return `<span class="cell cell-value is-empty">—</span>`;
+  }
+  const value = header[field];
+  const tone = field === "headerTarget"
+    ? (value === "response" ? "response" : "request")
+    : (field === "operation" ? value : "");
   return `
-          <div class="saved-rule ${header.enabled ? "" : "disabled"}" data-header-id="${header.id}">
-            <span class="rule-kind ${header.headerTarget === "response" ? "response" : ""}">${header.headerTarget === "request" ? "REQ" : "RES"}</span>
-            <div class="rule-copy">
-              <div class="rule-line"><span class="rule-op ${header.operation}">${header.operation.toUpperCase()}</span> ${escapeHtml(header.headerName)}${headerValueMarkup(header)}</div>
-              <div class="rule-method">${header.requestMethod === "all" ? "ALL" : header.requestMethod.toUpperCase()}</div>
-            </div>
-            <div class="rule-actions">
-              ${header.operation === "remove" ? "" : '<button data-action="edit-header-value" type="button">改值</button>'}
-              <button data-action="toggle-header" type="button">${header.enabled ? "停用" : "启用"}</button>
-              <button class="delete-rule" data-action="delete-header" type="button" aria-label="删除这条 Header">×</button>
-            </div>
-          </div>
-        `;
+    <button type="button"
+            class="cell cell-${field} ${tone}"
+            data-edit="${field}" data-header-id="${header.id}"
+            aria-label="修改${HEADER_FIELD_LABEL[field]}">${escapeHtml(fieldLabel(field, value))}</button>`;
+}
+
+function ruleRowMarkup(header) {
+  return `
+    <div class="saved-rule ${header.enabled ? "" : "disabled"}" data-header-id="${header.id}">
+      <input class="r-toggle" type="checkbox" data-action="toggle-header" ${header.enabled ? "checked" : ""} aria-label="启用/停用该 Header" />
+      ${ruleCellMarkup(header, "headerTarget")}
+      ${ruleCellMarkup(header, "requestMethod")}
+      ${ruleCellMarkup(header, "operation")}
+      ${ruleCellMarkup(header, "headerName")}
+      ${ruleCellMarkup(header, "headerValue")}
+      <button class="r-del" data-action="delete-header" type="button" aria-label="删除这条 Header">×</button>
+    </div>`;
+}
+
+// Always-visible dashed row that starts an inline "new header" editor.
+function inlineAddTriggerMarkup() {
+  return `
+    <button class="inline-add-trigger" data-action="begin-inline-add" type="button">
+      <span class="plus">＋</span><span>添加 Header</span>
+    </button>`;
+}
+
+function selectOptionsMarkup(field, selected) {
+  return HEADER_FIELDS[field].options
+    .map(([key, label]) => `<option value="${key}" ${key === selected ? "selected" : ""}>${label}</option>`)
+    .join("");
+}
+
+// The inline editor for a brand-new header, embedded at the bottom of the list.
+function inlineAddRowMarkup() {
+  return `
+    <div class="saved-rule inline-add" data-inline-add>
+      <span class="r-toggle-spacer"></span>
+      <select class="cell-editor" data-field="headerTarget" aria-label="作用位置">${selectOptionsMarkup("headerTarget", "request")}</select>
+      <select class="cell-editor" data-field="requestMethod" aria-label="请求方法">${selectOptionsMarkup("requestMethod", "all")}</select>
+      <select class="cell-editor" data-field="operation" aria-label="操作">${selectOptionsMarkup("operation", "set")}</select>
+      <input class="cell-editor" data-field="headerName" placeholder="Header 名称" aria-label="Header 名称" spellcheck="false" />
+      <input class="cell-editor" data-field="headerValue" placeholder="值" aria-label="Header 值" spellcheck="false" />
+      <button class="r-del r-confirm" data-action="confirm-inline-add" type="button" aria-label="添加 (Enter)" title="添加 (Enter)">✓</button>
+    </div>`;
 }
 
 function renderDetail() {
@@ -453,36 +482,29 @@ function renderDetail() {
     elements.detailStat.innerHTML = target.enabled
       ? `<span class="n">${activeHeaders}/${target.headers.length}</span> 条 Header 已启用`
       : '<span class="is-off">已停用</span>';
-    elements.detailRules.innerHTML = target.headers.map(ruleRowMarkup).join("");
-    requestAnimationFrame(() => truncationTitle(elements.detailUrl));
-    if (editingHeaderId !== null) {
-      const input = elements.detailRules.querySelector(".edit-value-input");
-      input?.focus();
-      input?.select();
-    }
+    elements.detailRules.innerHTML = target.headers.map(ruleRowMarkup).join("")
+      + (addingInline ? inlineAddRowMarkup() : inlineAddTriggerMarkup());
+    requestAnimationFrame(() => {
+      truncationTitle(elements.detailUrl);
+      if (addingInline) {
+        const nameInput = elements.detailRules.querySelector('[data-inline-add] [data-field="headerName"]');
+        nameInput?.focus();
+      }
+    });
   }
 }
 
 function renderComposer() {
+  // The composer now only serves creating a new page (which needs a URL).
   const open = composer.open;
   elements.composerPanel.hidden = !open;
   elements.composerPanel.classList.toggle("open", open);
   if (!open) return;
 
-  const isNew = composer.mode === "new";
-  elements.urlFieldNew.hidden = !isNew;
-  elements.urlFieldLocked.hidden = isNew;
-  elements.useCurrentPage.style.display = isNew ? "" : "none";
-
-  if (isNew) {
-    elements.composerTitle.textContent = targets.length === 0 ? "新建页面规则" : "新增页面";
-    elements.submitBtn.textContent = "创建并应用";
-  } else {
-    const target = currentTarget();
-    elements.composerTitle.textContent = "追加 Header";
-    elements.submitBtn.textContent = "应用到该页面";
-    elements.urlLockedValue.textContent = target ? target.urlFilter : "";
-  }
+  elements.urlFieldNew.hidden = false;
+  elements.useCurrentPage.style.display = "";
+  elements.composerTitle.textContent = targets.length === 0 ? "新建页面规则" : "新增页面";
+  elements.submitBtn.textContent = "创建并应用";
 }
 
 function renderBulk() {
@@ -547,34 +569,188 @@ function mutateTargets(mutator, successMessage) {
 /* ---------------- composer open/close ---------------- */
 
 function openNewComposer() {
-  editingHeaderId = null;
+  addingInline = false;
   composer = { open: true, mode: "new", targetId: null };
   renderTargets();
   elements.composerPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   elements.urlFilter.focus();
 }
 
-function openAppendComposer(target) {
-  editingHeaderId = null;
-  selectedTargetId = target.id;
-  composer = { open: true, mode: "append", targetId: target.id };
-  // Preserve an in-progress draft for the same page; otherwise blank rows.
-  const keepDraft = draftState().urlFilter === target.urlFilter
-    && elements.batchRows.querySelector('[data-field="headerName"]')?.value.trim();
-  elements.urlFilter.value = target.urlFilter;
-  if (!keepDraft) {
-    elements.batchRows.innerHTML = "";
-    addDraftRow({});
-    persistDraft();
+/* ---------------- inline rules-grid editing ---------------- */
+
+// Returns an error message for an invalid header, or null when it's fine.
+function validateHeader(header) {
+  if (/\s/.test(header.headerName)) return "Header 名称不能包含空格";
+  if (!header.headerName) return "请填写 Header 名称";
+  if (header.operation !== "remove" && header.headerValue === "") return "请填写 Header 值";
+  if (header.headerTarget === "request" && header.operation === "append"
+      && !APPENDABLE_REQUEST_HEADERS.has(header.headerName.toLowerCase())) {
+    return `Chrome 不允许 APPEND ${header.headerName}，请使用 SET`;
   }
+  return null;
+}
+
+function headerDedupKey(header) {
+  return [header.headerTarget, header.requestMethod, header.headerName.toLowerCase()].join(":");
+}
+
+// Click a text/select cell -> swap it for an editor in place; commit on
+// Enter/blur/change, cancel on Escape. No "edit" button, no separate form.
+function startCellEdit(cell) {
+  const row = cell.closest(".saved-rule");
+  if (!row || row.querySelector(".cell-editor")) return;
+  const headerId = Number(cell.dataset.headerId);
+  const field = cell.dataset.edit;
+  const target = currentTarget();
+  const header = target && headerById(target, headerId);
+  if (!header) return;
+  if (field === "headerValue" && header.operation === "remove") return;
+
+  const def = HEADER_FIELDS[field];
+  const editor = document.createElement(def.type === "select" ? "select" : "input");
+  editor.className = "cell-editor";
+  editor.dataset.editField = field;
+  if (def.type === "select") {
+    editor.innerHTML = def.options
+      .map(([key, label]) => `<option value="${key}"${key === header[field] ? " selected" : ""}>${label}</option>`)
+      .join("");
+  } else {
+    editor.spellcheck = false;
+    editor.value = header[field];
+  }
+  cell.replaceWith(editor);
+  editor.focus();
+  if (editor.select) editor.select();
+
+  let done = false;
+  const finishCancel = () => { if (done) return; done = true; renderDetail(); };
+  const finishSave = () => {
+    if (done) return;
+    done = true;
+    saveCellEdit(target, header, field, editor.value, editor);
+  };
+  editor.addEventListener("blur", finishSave);
+  editor.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); finishSave(); }
+    else if (event.key === "Escape") { event.preventDefault(); finishCancel(); }
+  });
+  if (def.type === "select") editor.addEventListener("change", finishSave);
+}
+
+function saveCellEdit(target, header, field, rawValue, editor) {
+  const value = field === "headerName" ? rawValue.trim() : rawValue;
+  const merged = { ...header, [field]: value };
+  const error = validateHeader(merged);
+  if (error) {
+    showToast(error, true);
+    requestAnimationFrame(() => { editor.focus(); if (editor.select) editor.select(); });
+    return; // keep the editor open so the value can be fixed
+  }
+  mutateTargets((next) => {
+    const nextHeader = next.find((item) => item.id === target.id)?.headers.find((item) => item.id === header.id);
+    if (!nextHeader) return;
+    nextHeader[field] = value;
+    if (nextHeader.headerTarget === "request" && nextHeader.operation === "append") {
+      nextHeader.headerName = nextHeader.headerName.toLowerCase();
+    }
+  }, "已更新");
+}
+
+function beginInlineAdd() {
+  if (!currentTarget()) return;
+  addingInline = true;
+  renderDetail();
+  requestAnimationFrame(() => {
+    elements.detailRules.querySelector("[data-inline-add]")?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function cancelInlineAdd() {
+  addingInline = false;
+  renderDetail();
+}
+
+function readInlineRow(row) {
+  return {
+    headerTarget: row.querySelector('[data-field="headerTarget"]').value,
+    requestMethod: row.querySelector('[data-field="requestMethod"]').value,
+    operation: row.querySelector('[data-field="operation"]').value,
+    headerName: row.querySelector('[data-field="headerName"]').value.trim(),
+    headerValue: row.querySelector('[data-field="headerValue"]').value
+  };
+}
+
+// Persist the inline "new header" row. Keeps chaining by showing a fresh empty
+// row afterwards, so several headers can be added back-to-back.
+async function commitInlineAdd(continueAdding = true) {
+  const target = currentTarget();
+  const row = elements.detailRules.querySelector("[data-inline-add]");
+  if (!target || !row) return;
+
+  const draft = readInlineRow(row);
+  const error = validateHeader(draft);
+  if (error) {
+    showToast(error, true);
+    row.querySelector('[data-field="headerName"]').focus();
+    return;
+  }
+
+  const newId = nextRuleId();
+  await mutateTargets((next) => {
+    const nextTarget = next.find((item) => item.id === target.id);
+    const header = { id: newId, enabled: true, ...draft };
+    if (header.headerTarget === "request" && header.operation === "append") {
+      header.headerName = header.headerName.toLowerCase();
+    }
+    const existingIndex = nextTarget.headers.findIndex((item) => headerDedupKey(item) === headerDedupKey(header));
+    if (existingIndex >= 0) {
+      header.id = nextTarget.headers[existingIndex].id;
+      nextTarget.headers[existingIndex] = header;
+    } else {
+      nextTarget.headers.push(header);
+    }
+    nextTarget.enabled = true;
+  }, `已添加 ${draft.headerName}`);
+
+  addingInline = continueAdding;
   renderTargets();
-  elements.composerPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  elements.batchRows.querySelector('[data-field="headerName"]')?.focus();
+}
+
+// Bulk-create from a multiline "Name: value" paste straight into the add row.
+async function bulkAddFromPaste(row, items) {
+  const target = currentTarget();
+  if (!target) return;
+  const headerTarget = row.querySelector('[data-field="headerTarget"]').value;
+  const requestMethod = row.querySelector('[data-field="requestMethod"]').value;
+  const drafts = items.map((item) => ({
+    enabled: true, headerTarget, requestMethod, operation: "set",
+    headerName: item.name, headerValue: item.value
+  }));
+  for (const draft of drafts) {
+    const error = validateHeader(draft);
+    if (error) { showToast(error, true); return; }
+  }
+  addingInline = false;
+  let baseId = nextRuleId();
+  await mutateTargets((next) => {
+    const nextTarget = next.find((item) => item.id === target.id);
+    for (const draft of drafts) {
+      const header = { id: baseId, ...draft };
+      baseId += 1;
+      const existingIndex = nextTarget.headers.findIndex((item) => headerDedupKey(item) === headerDedupKey(header));
+      if (existingIndex >= 0) {
+        header.id = nextTarget.headers[existingIndex].id;
+        nextTarget.headers[existingIndex] = header;
+      } else {
+        nextTarget.headers.push(header);
+      }
+    }
+    nextTarget.enabled = true;
+  }, `已添加 ${drafts.length} 条 Header`);
 }
 
 function closeComposerPanel() {
   composer = { open: false, mode: "new", targetId: null };
-  editingHeaderId = null;
   renderTargets();
 }
 
@@ -583,9 +759,7 @@ function closeComposerPanel() {
 async function submitBatch(event) {
   event.preventDefault();
 
-  const urlFilter = composer.mode === "append"
-    ? currentTarget()?.urlFilter
-    : elements.urlFilter.value.trim();
+  const urlFilter = elements.urlFilter.value.trim();
   if (!urlFilter) {
     showToast("页面 URL 不能为空", true);
     return;
@@ -725,6 +899,7 @@ elements.targetList.addEventListener("click", (event) => {
   }
 
   selectedTargetId = targetId;
+  addingInline = false;
   // Switching target discards a "new page" draft view.
   if (composer.open && composer.mode === "new") {
     composer = { open: false, mode: "new", targetId: null };
@@ -732,53 +907,53 @@ elements.targetList.addEventListener("click", (event) => {
   renderTargets();
 });
 
-/* detail head + rules */
+/* detail head: target-level actions */
 document.querySelector("#targetDetail").addEventListener("click", (event) => {
   const actionButton = event.target.closest("[data-action]");
   const target = currentTarget();
-  if (!target) return;
-
-  if (!actionButton) return;
+  if (!target || !actionButton) return;
   const action = actionButton.dataset.action;
 
   if (action === "toggle-target") {
     mutateTargets((next) => { next.find((item) => item.id === target.id).enabled = !target.enabled; },
       target.enabled ? "目标已整体停用" : "目标已整体启用");
   } else if (action === "append-target") {
-    openAppendComposer(target);
+    beginInlineAdd();
   } else if (action === "delete-target") {
+    addingInline = false;
     mutateTargets((next) => next.splice(next.findIndex((item) => item.id === target.id), 1), "目标及其规则已删除");
-  } else if (["toggle-header", "delete-header", "edit-header-value", "save-header-value", "cancel-header-value"].includes(action)) {
-    handleHeaderAction(action, target, actionButton, event);
   }
 });
 
-function handleHeaderAction(action, target, actionButton, event) {
-  const headerId = Number(event.target.closest(".saved-rule")?.dataset.headerId);
-  if (!Number.isInteger(headerId)) return;
+function headerById(target, id) {
+  return target.headers.find((h) => h.id === id);
+}
 
-  if (action === "select-target") {
-    actionButton.checked ? selectedTargetIds.add(target.id) : selectedTargetIds.delete(target.id);
-    renderTargets();
-  } else if (action === "edit-header-value") {
-    editingHeaderId = headerId;
-    renderDetail();
-  } else if (action === "cancel-header-value") {
-    editingHeaderId = null;
-    renderDetail();
-  } else if (action === "save-header-value") {
-    const input = elements.detailRules.querySelector(".edit-value-input");
-    if (input.value === "") { showToast("Header 值不能为空", true); return; }
-    mutateTargets((next) => {
-      const nextHeader = next.find((item) => item.id === target.id)?.headers.find((item) => item.id === headerId);
-      if (nextHeader) nextHeader.headerValue = input.value;
-    }, "Header 值已更新").then(() => { editingHeaderId = null; renderDetail(); });
+/* rules grid: every cell is directly editable */
+elements.detailRules.addEventListener("click", (event) => {
+  const cell = event.target.closest(".cell[data-edit]");
+  if (cell) { startCellEdit(cell); return; }
+
+  const actionEl = event.target.closest("[data-action]");
+  if (!actionEl) return;
+  const action = actionEl.dataset.action;
+  const target = currentTarget();
+  if (!target) return;
+
+  if (action === "begin-inline-add") {
+    beginInlineAdd();
+  } else if (action === "confirm-inline-add") {
+    commitInlineAdd();
   } else if (action === "toggle-header") {
+    const headerId = Number(actionEl.closest(".saved-rule")?.dataset.headerId);
+    if (!Number.isInteger(headerId)) return;
     mutateTargets((next) => {
       const nextHeader = next.find((item) => item.id === target.id)?.headers.find((item) => item.id === headerId);
       if (nextHeader) nextHeader.enabled = !nextHeader.enabled;
     }, headerById(target, headerId)?.enabled ? "Header 已停用" : "Header 已启用");
   } else if (action === "delete-header") {
+    const headerId = Number(actionEl.closest(".saved-rule")?.dataset.headerId);
+    if (!Number.isInteger(headerId)) return;
     mutateTargets((next) => {
       const nextTarget = next.find((item) => item.id === target.id);
       const idx = nextTarget.headers.findIndex((item) => item.id === headerId);
@@ -786,27 +961,59 @@ function handleHeaderAction(action, target, actionButton, event) {
       // Remove the target shell when its last rule is gone.
       if (nextTarget.headers.length === 0) {
         const ti = next.findIndex((item) => item.id === target.id);
+        addingInline = false;
         next.splice(ti, 1);
       }
     }, "Header 已删除");
   }
-}
+});
 
-function headerById(target, id) {
-  return target.headers.find((h) => h.id === id);
-}
-
-/* Enter/Escape inside value editor */
+/* inline add row: keyboard, remove-value-for-REMOVE, blur finalize, paste */
 elements.detailRules.addEventListener("keydown", (event) => {
-  if (!event.target.classList.contains("edit-value-input")) return;
-  const savedRule = event.target.closest(".saved-rule");
-  if (event.key === "Enter") {
-    event.preventDefault();
-    savedRule.querySelector('[data-action="save-header-value"]').click();
-  } else if (event.key === "Escape") {
-    savedRule.querySelector('[data-action="cancel-header-value"]').click();
+  const addRow = event.target.closest?.("[data-inline-add]");
+  if (!addRow) return;
+  if (event.key === "Enter") { event.preventDefault(); commitInlineAdd(); }
+  else if (event.key === "Escape") { event.preventDefault(); cancelInlineAdd(); }
+});
+
+elements.detailRules.addEventListener("change", (event) => {
+  const addRow = event.target.closest?.("[data-inline-add]");
+  if (addRow && event.target.dataset.field === "operation") {
+    const valueInput = addRow.querySelector('[data-field="headerValue"]');
+    const isRemove = event.target.value === "remove";
+    valueInput.disabled = isRemove;
+    valueInput.required = !isRemove;
   }
 });
+
+let inlineBlurTimer = null;
+elements.detailRules.addEventListener("focusout", (event) => {
+  const row = event.target.closest?.("[data-inline-add]");
+  if (!row) return;
+  clearTimeout(inlineBlurTimer);
+  inlineBlurTimer = setTimeout(() => {
+    if (!row.isConnected || row.contains(document.activeElement)) return;
+    const name = row.querySelector('[data-field="headerName"]').value.trim();
+    if (name) commitInlineAdd(); else cancelInlineAdd();
+  }, 120);
+});
+
+elements.detailRules.addEventListener("paste", (event) => {
+  if (event.target.dataset?.field !== "headerName") return;
+  const parsed = parseHeaderPaste(event.clipboardData?.getData("text") || "");
+  if (!parsed) return;
+  event.preventDefault();
+  const addRow = event.target.closest("[data-inline-add]");
+  if (addRow && parsed.length > 1) { bulkAddFromPaste(addRow, parsed); return; }
+  event.target.value = parsed[0].name;
+  if (addRow) {
+    addRow.querySelector('[data-field="operation"]').value = "set";
+    const valueInput = addRow.querySelector('[data-field="headerValue"]');
+    valueInput.disabled = false;
+    valueInput.value = parsed[0].value;
+  }
+});
+
 
 /* composer buttons */
 elements.newTargetBtn.addEventListener("click", openNewComposer);
@@ -814,7 +1021,7 @@ elements.emptyCreate.addEventListener("click", openNewComposer);
 elements.closeComposer.addEventListener("click", closeComposerPanel);
 
 document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || !composer.open || editingHeaderId !== null) return;
+  if (event.key !== "Escape" || !composer.open) return;
   if (event.target.closest("input, select, textarea")) return;
   closeComposerPanel();
 });
