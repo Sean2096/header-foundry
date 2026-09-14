@@ -10,6 +10,12 @@
     <div class="shell">
       <header class="masthead">
         <div class="brand">
+          <svg class="brand-mark" width="20" height="20" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="1" y="1" width="14" height="14" rx="3.2" fill="#d9ff45"/>
+            <rect x="4" y="4" width="2" height="8" fill="#151512"/>
+            <rect x="10" y="4" width="2" height="8" fill="#151512"/>
+            <rect x="6" y="7" width="4" height="2" fill="#151512"/>
+          </svg>
           <h1>Header Foundry</h1>
         </div>
         <div class="telemetry">
@@ -18,76 +24,107 @@
         </div>
       </header>
 
-      <main>
-        <section class="targets-section" aria-labelledby="targetListTitle">
-          <div class="section-heading list-heading">
-            <div>
-              <h2 id="targetListTitle">页面规则</h2>
-            </div>
-            <div class="section-actions">
-              <button id="toggleBulkMode" class="secondary-button" type="button">批量管理</button>
-              <button id="clearAll" class="danger-button" type="button">清空全部</button>
-              <button id="openComposer" class="primary-button" type="button">＋ 新增规则</button>
-            </div>
+      <main class="workspace">
+        <!-- 左：页面规则轨 -->
+        <aside class="rail" aria-label="页面规则列表">
+          <div class="rail-head">
+            <h2>页面规则</h2>
           </div>
 
-          <div id="emptyState" class="empty-state">
-            <div>
-              <strong>还没有页面规则</strong>
-              <p>在下方创建一条页面 URL 规则。</p>
-            </div>
-          </div>
-          <div id="bulkActions" class="bulk-actions" hidden>
+          <button id="newTargetBtn" class="new-target-btn" type="button">
+            <span class="plus">＋</span><span>新增页面</span>
+          </button>
+
+          <div id="bulkBar" class="rail-bulk" hidden>
             <label class="bulk-select-all">
               <input id="selectAllTargets" type="checkbox" />
-              <span>全选页面规则</span>
+              <span>全选</span>
             </label>
-            <div class="bulk-selection"><b id="selectedTargetCount">00</b><span>已选择</span></div>
+            <div class="bulk-meta"><b id="selectedTargetCount">00</b><span>已选</span></div>
             <div class="bulk-buttons">
-              <button id="enableSelected" type="button">启用所选</button>
-              <button id="disableSelected" type="button">停用所选</button>
-              <button id="invertSelected" type="button">反转状态</button>
+              <button id="enableSelected" type="button">启用</button>
+              <button id="disableSelected" type="button">停用</button>
+              <button id="invertSelected" type="button">反转</button>
             </div>
           </div>
-          <div id="targetList" class="target-list" aria-live="polite"></div>
-        </section>
 
-        <section id="composerPanel" class="composer" aria-labelledby="composerTitle" hidden>
-          <div class="section-heading composer-heading">
-            <div>
-              <h2 id="composerTitle">新增页面规则</h2>
+          <div id="targetList" class="rail-list" role="list" aria-live="polite"></div>
+
+          <div class="rail-foot">
+            <button id="toggleBulkMode" class="foot-button" type="button" hidden>批量管理</button>
+            <button id="clearAll" class="foot-button danger" type="button" hidden>清空全部</button>
+          </div>
+        </aside>
+
+        <!-- 右：明细 + 就地编辑 -->
+        <section class="detail" aria-label="规则明细">
+          <div id="emptyState" class="detail-empty">
+            <div class="empty-mark" aria-hidden="true">
+              <svg width="30" height="30" viewBox="0 0 16 16">
+                <rect x="1" y="1" width="14" height="14" rx="3.2" fill="none" stroke="#c3c9d2" stroke-width="1.4"/>
+                <rect x="4" y="4" width="2" height="8" rx="1" fill="#c3c9d2"/>
+                <rect x="10" y="4" width="2" height="8" rx="1" fill="#c3c9d2"/>
+                <rect x="6" y="7" width="4" height="2" rx="1" fill="#c3c9d2"/>
+              </svg>
             </div>
-            <button id="closeComposer" class="icon-close" type="button" aria-label="收起新增规则表单">×</button>
+            <strong id="emptyTitle">还没有页面规则</strong>
+            <p id="emptyHint">选择一个页面查看规则，或新建第一批 Header 规则。</p>
+            <button id="emptyCreate" class="primary-button" type="button">＋ 新建页面规则</button>
           </div>
 
-          <form id="targetForm">
-            <label class="url-field">
-              <span>页面 URL FILTER</span>
-              <div class="url-input-wrap">
-                <input id="urlFilter" name="urlFilter" required value="||httpbin.org/" placeholder="||api.example.com/" spellcheck="false" />
-                <button id="useCurrentPage" class="current-page-button" type="button">使用当前页面</button>
+          <div id="targetDetail" hidden>
+            <div class="detail-head">
+              <button class="toggle" data-action="toggle-target" type="button" aria-label="启停该目标" aria-pressed="true"></button>
+              <div class="detail-id">
+                <div id="detailUrl" class="detail-url"></div>
+                <div id="detailStat" class="detail-stat"></div>
               </div>
-              <small><code>||example.com/</code> 匹配页面地址，页面内所有后端请求都会应用规则</small>
-            </label>
-
-            <div class="batch-bar">
-              <div>
-                <span>批量 Header</span>
-                <b id="draftCount">01</b>
+              <div class="detail-actions">
+                <button class="text-action" data-action="append-target" type="button">＋ 追加 Header</button>
+                <button class="icon-button danger" data-action="delete-target" type="button" title="删除该页面规则" aria-label="删除该页面规则">×</button>
               </div>
-              <button id="addHeaderRow" class="mini-button" type="button"><span>＋</span> 添加一行</button>
             </div>
 
-            <div class="batch-columns" aria-hidden="true">
-              <span>#</span><span>位置</span><span>方法</span><span>操作</span><span>HEADER 名称</span><span>HEADER 值</span><span></span>
-            </div>
-            <div id="batchRows" class="batch-rows"></div>
+            <div id="detailRules" class="detail-rules"></div>
+          </div>
 
-            <button class="forge-button" type="submit">应用这一批规则</button>
-          </form>
+          <section id="composerPanel" class="composer" aria-labelledby="composerTitle" hidden>
+            <div class="composer-inner">
+              <div class="composer-head">
+                <h2 id="composerTitle">追加 Header</h2>
+                <button id="closeComposer" class="icon-close" type="button" aria-label="收起编辑器">×</button>
+              </div>
+
+              <form id="targetForm">
+                <div id="urlFieldNew" class="url-field" hidden>
+                  <label for="urlFilter">页面 URL FILTER</label>
+                  <div class="url-input-wrap">
+                    <input id="urlFilter" name="urlFilter" value="||httpbin.org/" placeholder="||api.example.com/" spellcheck="false" />
+                    <button id="useCurrentPage" class="current-page-button" type="button">使用当前页面</button>
+                  </div>
+                  <small><code>||example.com/</code> 匹配页面地址，页面内所有后端请求都会应用规则</small>
+                </div>
+                <div id="urlFieldLocked" class="url-locked" hidden>
+                  <span class="url-locked-label">目标页面</span>
+                  <code id="urlLockedValue"></code>
+                </div>
+
+                <div class="batch-bar">
+                  <div><span>批量 Header</span><b id="draftCount">01</b></div>
+                  <button id="addHeaderRow" class="mini-button" type="button"><span>＋</span> 添加一行</button>
+                </div>
+
+                <div class="batch-columns" aria-hidden="true">
+                  <span>#</span><span>位置</span><span>方法</span><span>操作</span><span>HEADER 名称</span><span>HEADER 值</span><span></span>
+                </div>
+                <div id="batchRows" class="batch-rows"></div>
+
+                <button class="forge-button" type="submit" id="submitBtn">应用这一批规则</button>
+              </form>
+            </div>
+          </section>
         </section>
       </main>
-
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
