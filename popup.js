@@ -850,10 +850,11 @@ async function fillCurrentPage() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const url = tab?.url || "";
-    if (!["http:", "https:"].includes(new URL(url).protocol)) throw new Error("当前页面不是 HTTP(S) 页面");
-    elements.urlFilter.value = `||${url.hostname}/`;
+    const parsed = new URL(url);
+    if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("当前页面不是 HTTP(S) 页面");
+    elements.urlFilter.value = `||${parsed.hostname}/`;
     persistDraft();
-    showToast(`已使用当前页面：${url.hostname}`);
+    showToast(`已使用当前页面：${parsed.hostname}`);
   } catch (error) {
     showToast(error.message || "无法读取当前页面", true);
   }

@@ -250,9 +250,12 @@ async function setTabState(tab, headers) {
 let targets = [];
 let syncQueue = Promise.resolve();
 
-const targetsReady = chrome.storage.local.get(STORAGE_KEY).then((stored) => {
-  targets = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
-});
+const targetsReady = chrome.storage.local.get(STORAGE_KEY).then(
+  (stored) => {
+    targets = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
+  },
+  (error) => console.warn("Header Foundry: failed to load stored rules", error)
+);
 
 async function syncAllPageRules() {
   await targetsReady;
@@ -265,10 +268,12 @@ async function syncAllPageRules() {
   const navigationRules = buildNavigationRules();
 
   await Promise.all([
+    // Both rule sets are best-effort independently: an invalid ruleset must
+    // neither abort the other nor the tab icon refresh below.
     chrome.declarativeNetRequest.updateSessionRules({
       removeRuleIds: currentSessionRules.map((rule) => rule.id),
       addRules: sessionRules
-    }),
+    }).catch((error) => console.warn("Header Foundry: session rule update failed", error)),
     // Main-frame navigation rules are global and best-effort: an invalid
     // page filter must not block tab-scoped rules or the icon refresh.
     chrome.declarativeNetRequest.updateDynamicRules({
@@ -280,9 +285,13 @@ async function syncAllPageRules() {
   await Promise.all(tabs.map((tab) => setTabState(tab, enabledHeadersForPage(tab.url))));
 }
 
+// Serializes sync runs and always resolves: event listeners and the
+// onMessage caller must never observe an unhandled rejection.
 function scheduleSync() {
-  const run = syncQueue.then(syncAllPageRules);
-  syncQueue = run.catch(() => {});
+  const run = syncQueue
+    .then(syncAllPageRules)
+    .catch((error) => console.warn("Header Foundry: rule sync failed", error));
+  syncQueue = run;
   return run;
 }
 
@@ -314,6 +323,6 @@ chrome.runtime.onMessage.addListener((message) => {
 chrome.runtime.onInstalled.addListener(() => { scheduleSync(); });
 chrome.runtime.onStartup.addListener(() => { scheduleSync(); });
 
-chrome.action.setIcon({ imageData: ICONS.inactive });
-chrome.action.setTitle({ title: "Header Foundry：当前页面没有启用的 Header 规则" });
+chrome.action.setIcon({ imageData: ICONS.inactive }).catch(() => {});
+chrome.action.setTitle({ title: "Header Foundry：当前页面没有启用的 Header 规则" }).catch(() => {});
 scheduleSync();
